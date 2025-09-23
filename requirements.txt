@@ -1,0 +1,8 @@
+flask
+keras-facenet
+pillow
+numpy
+opencv-python
+matplotlib
+scipy
+tensorflow

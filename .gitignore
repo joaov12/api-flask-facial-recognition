@@ -1,0 +1,12 @@
+# venv
+venv/
+__pycache__/
+*.pyc
+
+# modelos pesados
+*.pkl
+*.h5
+*.onnx
+
+# VS Code
+.vscode/
