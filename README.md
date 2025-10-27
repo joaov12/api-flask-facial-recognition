@@ -50,3 +50,5 @@ usando embeddings (Facenet).
 - Coloque as imagens de teste (`exemplo1.jpg`, `exemplo2.jpg`, `exemplo3.jpg`) dentro da pasta `app/tests/`.  
 - O endpoint `/embeddings` gera os embeddings de uma imagem.  
 - O endpoint `/compare` compara duas imagens e retorna a distância e se são a mesma pessoa.  
+
+
