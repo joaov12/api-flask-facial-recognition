@@ -11,7 +11,7 @@ import os
 COLLECTION_NAME = "faces"
 
 # ============================================================
-# 🔹 Conexão com o servidor Milvus
+# Conexão com o servidor Milvus
 # ============================================================
 def connect_milvus(host="127.0.0.1", port="19530"):
     """
@@ -34,7 +34,7 @@ def connect_milvus(host="127.0.0.1", port="19530"):
 
 
 # ============================================================
-# 🔹 Criação da Collection
+#  Criação da Collection
 # ============================================================
 def create_collection_if_not_exists(dim=512):
     """
@@ -57,7 +57,7 @@ def create_collection_if_not_exists(dim=512):
     collection = Collection(name=COLLECTION_NAME, schema=schema)
     print("[Milvus] 🆕 Collection 'faces' criada com sucesso com campo 's3_path'.")
 
-    # 🔹 Cria índice vetorial
+    #  Cria índice vetorial
     index_params = {
         "metric_type": "L2",
         "index_type": "IVF_FLAT",
@@ -70,7 +70,7 @@ def create_collection_if_not_exists(dim=512):
 
 
 # ============================================================
-# 🔹 Inserção de uma face
+#  Inserção de uma face
 # ============================================================
 def insert_face(suspect_id, embedding, is_query=False, metadata=None, s3_path=None):
     """
@@ -111,7 +111,7 @@ def insert_face(suspect_id, embedding, is_query=False, metadata=None, s3_path=No
 
 
 # ============================================================
-# 🔹 Busca de faces semelhantes
+#  Busca de faces semelhantes
 # ============================================================
 def search_similar_faces(embedding, top_k=3):
     """
@@ -126,7 +126,7 @@ def search_similar_faces(embedding, top_k=3):
     collection = Collection(COLLECTION_NAME)
     collection.load()
 
-    # 🔹 Filtra apenas embeddings de suspeitos cadastrados
+    #  Filtra apenas embeddings de suspeitos cadastrados
     # Retorna face_ids válidos para busca
     registered_faces = collection.query(
         expr="is_query == false",
@@ -139,7 +139,7 @@ def search_similar_faces(embedding, top_k=3):
 
     valid_face_ids = [int(f["face_id"]) for f in registered_faces]
 
-    # 🔹 Busca vetorial apenas entre os registros válidos
+    #  Busca vetorial apenas entre os registros válidos
     search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
     results = collection.search(
         data=[embedding],

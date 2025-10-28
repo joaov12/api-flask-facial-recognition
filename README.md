@@ -1,54 +1,62 @@
-# API Flask - Facial Recognition (NEXUS)
+# Executando a Aplicação
 
-API em Flask responsável por expor serviços de reconhecimento facial 
-usando embeddings (Facenet).  
-
-## Estrutura
-- **app/**: código principal
-  - controllers/: rotas
-  - services/: lógica de negócio/modelo
-  - models/: arquivos de IA
-  - core/: configurações
-  - tests/: testes
-
-# 🚀 Como rodar o projeto NEXUS (API Flask Facial Recognition)
-
-## 📦 Pré-requisitos
-- **Python 3.10** (instale pela [Microsoft Store] no Windows).  
-- **VSCode** (recomendado).  
+Este projeto utiliza **Flask (Python)** com **Redis** e **Milvus** para processamento e armazenamento vetorial de embeddings faciais.  
+Siga os passos abaixo para iniciar tudo do zero.  
 
 ---
 
-## ⚙️ Passo a passo para rodar
+## 📦 **1. Redis — Fila de Mensagens**
 
-1. **Instale as dependências**  
-   No terminal integrado do VSCode:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Baixe a imagem e rode o container Redis:
 
-2. **Inicie a API**
-   ```bash
-   python main.py
-   ```
-   A aplicação vai rodar em:  
-   👉 [http://127.0.0.1:5000](http://127.0.0.1:5000)
+```bash
+docker pull redis:7-alpine
+docker run -d --name redis-local -p 6379:6379 redis:7-alpine
+```
 
-3. **Teste o endpoint de embeddings**
-   ```bash
-   python app/tests/test_embeddings.py
-   ```
-
-4. **Teste o endpoint de comparação**
-   ```bash
-   python app/tests/test_compare.py
-   ```
+✅ Redis estará rodando em `localhost:6379`
 
 ---
 
-## 📌 Observações
-- Coloque as imagens de teste (`exemplo1.jpg`, `exemplo2.jpg`, `exemplo3.jpg`) dentro da pasta `app/tests/`.  
-- O endpoint `/embeddings` gera os embeddings de uma imagem.  
-- O endpoint `/compare` compara duas imagens e retorna a distância e se são a mesma pessoa.  
+## 🧩 **2. Milvus — Banco Vetorial**
 
+Em uma terminal na pasta onde está o arquivo `docker-compose.yml` , execute:
 
+```bash
+docker compose up -d
+```
+
+✅ Milvus estará disponível em `localhost:19530`
+
+---
+
+## 🐍 **3. Python — Aplicação Flask e Worker**
+
+Com dois terminal na raiz do projeto(uma para cada comando), inicie:
+
+### 🔹 API Flask
+```bash
+python main.py
+```
+
+### 🔹 Worker (fila Redis)
+Em outro terminal, rode:
+```bash
+python run_worker.py
+```
+
+✅ A API Flask ficará escutando as requisições.  
+✅ O Worker processará as tarefas enfileiradas (registro e busca de faces).
+
+---
+
+## 🧠 **Resumo dos Serviços**
+
+| Serviço | Função | Porta |
+|----------|--------|-------|
+| 🧠 Flask API | Recebe e enfileira requisições | 5000 |
+| ⚙️ Worker | Processa tarefas (Redis) | — |
+| 📦 Redis | Fila de mensagens | 6379 |
+| 🧩 Milvus | Banco vetorial | 19530 |
+
+---
