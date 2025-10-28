@@ -3,7 +3,7 @@ from app.services.embeddings_service import generate_embeddings, compare_embeddi
 
 embeddings_bp = Blueprint("embeddings", __name__)
 
-# 🔹 Rota para gerar embeddings de uma imagem
+#  Rota para gerar embeddings de uma imagem
 @embeddings_bp.route("/embeddings", methods=["POST"])
 def embeddings():
     if "image" not in request.files:
@@ -14,7 +14,7 @@ def embeddings():
     return jsonify(result), status
 
 
-# 🔹 Rota para comparar duas imagens
+#  Rota para comparar duas imagens
 @embeddings_bp.route("/compare", methods=["POST"])
 def compare():
     if "image1" not in request.files or "image2" not in request.files:

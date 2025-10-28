@@ -7,3 +7,6 @@ matplotlib
 scipy
 tensorflow
 pymilvus
+boto3
+redis 
+rq
