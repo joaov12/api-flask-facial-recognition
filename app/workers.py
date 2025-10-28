@@ -9,7 +9,7 @@ def process_register_face(suspect_id, s3_path, metadata=None):
     Worker: baixa imagem do S3, gera embedding e salva no Milvus.
     """
     try:
-        print(f"[Worker] ⏳ Processando {s3_path} (suspect_id={suspect_id})")
+        print(f"[Worker] Processando {s3_path} (suspect_id={suspect_id})")
 
         # Quebra o caminho s3://bucket/key
         if not s3_path.startswith("s3://"):
@@ -20,13 +20,13 @@ def process_register_face(suspect_id, s3_path, metadata=None):
             raise ValueError("Caminho S3 inválido. Deve conter bucket e key")
 
         bucket, key = parts
-        print(f"[Worker] 🪣 Baixando do bucket '{bucket}' com key '{key}'...")
+        print(f"[Worker] Baixando do bucket '{bucket}' com key '{key}'...")
 
         # Baixa a imagem do S3 para a memória
         s3 = boto3.client(
             "s3",
-            aws_access_key_id="AKIAZVDHMZWLMJNM2UNJ",
-            aws_secret_access_key="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",
+            aws_access_key_id="xxx",
+            aws_secret_access_key="xxx",
             region_name="us-east-2"
         )
 
@@ -34,16 +34,16 @@ def process_register_face(suspect_id, s3_path, metadata=None):
         s3.download_fileobj(bucket, key, buffer)
         buffer.seek(0)
         buffer.name = key.split("/")[-1]  # nome do arquivo, útil se o modelo usa extensão
-        print(f"[Worker] 📥 Download concluído ({len(buffer.getvalue())} bytes).")
+        print(f"[Worker] Download concluído ({len(buffer.getvalue())} bytes).")
 
-        # 🔹 3️⃣ Gera o embedding com a imagem em memória
+        #  Gera o embedding com a imagem em memória
         embedding_result, status = generate_embeddings(buffer)
         if status != 200:
             raise Exception(f"Falha ao gerar embedding: {embedding_result}")
 
         embedding = embedding_result["embedding"]
 
-        # 🔹 4️⃣ Insere no Milvus
+        #  Insere no Milvus
         face_id = insert_face(
             suspect_id=int(suspect_id),
             embedding=embedding,
@@ -64,7 +64,7 @@ def process_register_face(suspect_id, s3_path, metadata=None):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[Worker] ❌ Erro ao processar {s3_path}: {e}")
+        print(f"[Worker]  Erro ao processar {s3_path}: {e}")
         raise e
 
 
@@ -76,7 +76,7 @@ def process_search_face(s3_path=None, top_k=5):
     from io import BytesIO
 
     try:
-        print(f"[Worker] 🔍 Processando busca (S3 path={s3_path})")
+        print(f"[Worker]  Processando busca (S3 path={s3_path})")
 
         # Valida caminho S3
         if not s3_path or not s3_path.startswith("s3://"):
@@ -87,21 +87,21 @@ def process_search_face(s3_path=None, top_k=5):
             raise ValueError("Caminho S3 inválido. Deve conter bucket e key")
 
         bucket, key = parts
-        print(f"[Worker] 🪣 Baixando imagem do bucket '{bucket}' com key '{key}'...")
+        print(f"[Worker]  Baixando imagem do bucket '{bucket}' com key '{key}'...")
 
         # Baixa a imagem
         s3 = boto3.client(
             "s3",
-            aws_access_key_id="AKIAZVDHMZWLMJNM2UNJ",
-            aws_secret_access_key="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",
-            region_name="us-east-2"
+            aws_access_key_id="xxx",
+            aws_secret_access_key="xxx",
+            region_name="xxx"
         )
 
         buffer = BytesIO()
         s3.download_fileobj(bucket, key, buffer)
         buffer.seek(0)
         buffer.name = key.split("/")[-1]
-        print(f"[Worker] 📥 Download concluído ({len(buffer.getvalue())} bytes).")
+        print(f"[Worker]  Download concluído ({len(buffer.getvalue())} bytes).")
 
         # Gera embedding
         embedding_result, status = generate_embeddings(buffer)
@@ -122,7 +122,7 @@ def process_search_face(s3_path=None, top_k=5):
             s3_path=s3_path
         )
 
-        print(f"[Worker] ✅ Busca concluída. {len(matches)} correspondências encontradas.")
+        print(f"[Worker]  Busca concluída. {len(matches)} correspondências encontradas.")
 
         # Retorna resultado simples
         return {
@@ -135,5 +135,5 @@ def process_search_face(s3_path=None, top_k=5):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[Worker] ❌ Erro ao processar busca: {e}")
+        print(f"[Worker]  Erro ao processar busca: {e}")
         raise e

@@ -76,7 +76,7 @@ def register_face():
             if not s3_path.startswith("s3://"):
                 return jsonify({"error": "Formato inválido em 's3_path'. Use s3://bucket/key"}), 400
 
-            # ✅ Envia tarefa com função real
+            #  Envia tarefa com função real
             job = queue.enqueue(
                 process_register_face,
                 suspect_id,
@@ -114,7 +114,7 @@ def search_faces():
         import boto3
         from io import BytesIO
         import json
-        from app.workers import process_search_face  # ✅ importante!
+        from app.workers import process_search_face
 
         data = request.get_json(silent=True) or request.form
         s3_path = data.get("s3_path")
