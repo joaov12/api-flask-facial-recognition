@@ -34,6 +34,11 @@ docker compose up -d
 
 Com dois terminal na raiz do projeto(uma para cada comando), inicie:
 
+### 🔹 requirements.txt
+```bash
+python -m pip install -r requirements.txt
+```
+
 ### 🔹 API Flask
 ```bash
 python main.py
