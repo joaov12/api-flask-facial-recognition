@@ -34,9 +34,16 @@ docker compose up -d
 
 Com dois terminal na raiz do projeto(uma para cada comando), inicie:
 
+### 🔹Instalar o pyython 3.10
+https://www.python.org/downloads/release/python-31011
+
 ### 🔹 requirements.txt
 ```bash
 python -m pip install -r requirements.txt
+```
+ou
+```bash
+py -m pip install -r requirements.txt
 ```
 
 ### 🔹 API Flask
