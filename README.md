@@ -88,3 +88,56 @@ Após o build, o ambiente completo será iniciado automaticamente, incluindo:
   Utilizado para guardar imagens, arquivos e outros dados binários do sistema.
 
 ---
+
+# 🧪 Testando os endpoints no Postman
+
+Abaixo estão os três principais endpoints para testar o funcionamento da API facial.
+
+---
+
+### **1️⃣ — Registrar face já associada a um suspeito (S3)**  
+Fluxo de registro de um novo suspeito.
+
+**Método:** `POST`  
+**Endpoint:** `http://127.0.0.1:5000/faces/register`  
+**Body (raw / JSON):**
+```json
+{
+  "s3_path": "s3://apijava-qrcode/João Gabriel.png_1763379356782",
+  "suspect_id": 1,
+  "metadata": {
+    "origem": "S3",
+    "operador": "Jose Antonio"
+  }
+}
+```
+
+---
+
+### **2️⃣ — Buscar rostos semelhantes (S3)**  
+Fluxo de busca facial a partir de uma imagem no S3.
+
+**Método:** `POST`  
+**Endpoint:** `http://127.0.0.1:5000/faces/search`  
+**Body (raw / JSON):**
+```json
+{
+  "s3_path": "s3://apijava-qrcode/João Gabriel.png_1763379356782",
+  "top_k": 5
+}
+```
+
+---
+
+### **3️⃣ — Listar suspeitos registrados**  
+
+**Método:** `GET`  
+**Endpoint:** `http://127.0.0.1:5000/faces/suspects`
+
+---
+
+💡 **Dica:**  
+Todos os endpoints devem ser testados com o ambiente Docker em execução, após rodar:
+```bash
+docker-compose up --build
+```
