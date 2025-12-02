@@ -1,74 +1,90 @@
-# Executando a Aplicação
+# Projeto de Reconhecimento Facial — Parte IA/Python
 
-Este projeto utiliza **Flask (Python)** com **Redis** e **Milvus** para processamento e armazenamento vetorial de embeddings faciais.  
-Siga os passos abaixo para iniciar tudo do zero.  
+## 🚀 Como executar o projeto localmente
 
----
-
-## 📦 **1. Redis — Fila de Mensagens**
-
-Baixe a imagem e rode o container Redis:
-
-```bash
-docker pull redis:7-alpine
-docker run -d --name redis-local -p 6379:6379 redis:7-alpine
-```
-
-✅ Redis estará rodando em `localhost:6379`
+### **1️⃣ — Ter o Docker Desktop em execução**
+Certifique-se de que o **Docker Desktop** está rodando no seu computador.  
+> *https://docs.docker.com/desktop/setup/install/windows-install/*
 
 ---
 
-## 🧩 **2. Milvus — Banco Vetorial**
+### **2️⃣ — Criar o arquivo `config.py` na raiz do projeto**
 
-Em uma terminal na pasta onde está o arquivo `docker-compose.yml` , execute:
+Crie seu próprio arquivo `config.py` na raiz do projeto, com as credenciais.
 
-```bash
-docker compose up -d
+#### 🧩 Exemplo de estrutura do `config.py`:
+```python
+# Tudo que precisa são as credenciais da AWS.
+
+AWS_ACCESS_KEY_ID = "sua_access_key_aqui"
+AWS_SECRET_ACCESS_KEY = "sua_secret_key_aqui"
+AWS_REGION = "us-east-1"
 ```
-
-✅ Milvus estará disponível em `localhost:19530`
 
 ---
 
-## 🐍 **3. Python — Aplicação Flask e Worker**
+### **3️⃣ — Subir o ambiente Docker**
 
-Com dois terminal na raiz do projeto(uma para cada comando), inicie:
+Abra um terminal na **raiz do projeto** e execute o comando abaixo para construir e iniciar todos os serviços:
 
-### 🔹Instalar o pyython 3.10
-https://www.python.org/downloads/release/python-31011
-
-### 🔹 requirements.txt
 ```bash
-python -m pip install -r requirements.txt
+docker-compose up --build
 ```
-ou
-```bash
-py -m pip install -r requirements.txt
-```
+O processo pode demorar alguns minutos, na primeira vez.
 
-### 🔹 API Flask
-```bash
-python main.py
-```
+Após o build, o ambiente completo será iniciado automaticamente, incluindo:
+- 🧠 **API Flask** (`facial_api`)  
+- ⚙️ **Worker de filas** (`facial_worker`)  
+- 🗄️ **Redis**  
+- 📦 **Milvus**  
+- 🔑 **Etcd**  
+- ☁️ **MinIO**
 
-### 🔹 Worker (fila Redis)
-Em outro terminal, rode:
-```bash
-python run_worker.py
-```
 
-✅ A API Flask ficará escutando as requisições.  
-✅ O Worker processará as tarefas enfileiradas (registro e busca de faces).
+---
+## 💡 Outro comandos
+
+- Para encerrar todos os containers:
+    ```bash
+    docker-compose down
+    ```
+
+- Para **reiniciar apenas a API** (sem rebuildar tudo):  
+  ```bash
+  docker-compose restart api
+  ```
+
+- Para **limpar volumes** e dados persistentes (Redis, Milvus, etc.):  
+  ```bash
+  docker-compose down -v
+  ```
 
 ---
 
-## 🧠 **Resumo dos Serviços**
 
-| Serviço | Função | Porta |
-|----------|--------|-------|
-| 🧠 Flask API | Recebe e enfileira requisições | 5000 |
-| ⚙️ Worker | Processa tarefas (Redis) | — |
-| 📦 Redis | Fila de mensagens | 6379 |
-| 🧩 Milvus | Banco vetorial | 19530 |
+### 🧩 Descrição dos serviços
+
+- 🧠 **API Flask (`facial_api`)**  
+  Serviço principal da aplicação.  
+  Responsável por receber requisições HTTP, processar imagens faciais, interagir com o banco vetorial (Milvus) e enfileirar tarefas no Redis.
+
+- ⚙️ **Worker de filas (`facial_worker`)**  
+  Executa as tarefas assíncronas enviadas pela API (como geração de embeddings faciais, inserção e busca no Milvus).  
+  Utiliza o **Redis** como gerenciador de filas (RQ - Redis Queue).
+
+- 🗄️ **Redis**  
+  Banco de dados em memória utilizado para gerenciamento de filas e cache.  
+  Armazena os jobs criados pela API e processados pelo Worker.
+
+- 📦 **Milvus**  
+  Banco de dados vetorial especializado em buscas de similaridade entre embeddings (vetores).  
+  É onde ficam armazenados os embeddings das faces cadastradas e consultadas.
+
+- 🔑 **Etcd**  
+  Serviço auxiliar utilizado internamente pelo Milvus para controle de configuração, registro de nós e coordenação de serviços distribuídos.
+
+- ☁️ **MinIO**  
+  Armazenamento de objetos compatível com o S3 da AWS.  
+  Utilizado para guardar imagens, arquivos e outros dados binários do sistema.
 
 ---
