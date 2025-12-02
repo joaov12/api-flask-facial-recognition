@@ -1,12 +1,30 @@
 from app.services.milvus_service import insert_face, search_similar_faces
 from app.services.embeddings_service import generate_embeddings
 import boto3
+import config
 from io import BytesIO
 import traceback
 
 def process_register_face(suspect_id, s3_path, metadata=None):
     """
-    Worker: baixa imagem do S3, gera embedding e salva no Milvus.
+    Processa o registro de uma face: baixa a imagem do S3, gera o embedding
+    e salva o registro no Milvus.
+
+    Args:
+        suspect_id (int or str): ID do suspeito associado à face registrada.
+        s3_path (str): Caminho completo no formato s3://bucket/key da imagem a ser processada.
+        metadata (dict, optional): Metadados adicionais relacionados à face. Default é None.
+
+    Returns:
+        dict: Informações do registro criado, contendo:
+            - message (str): Mensagem de sucesso.
+            - face_id (int): ID da face armazenada no Milvus.
+            - suspect_id (int): ID do suspeito.
+            - s3_path (str): Caminho da imagem no S3.
+
+    Raises:
+        Exception: Caso ocorra erro no download da imagem, geração do embedding
+            ou inserção no Milvus.
     """
     try:
         print(f"[Worker] Processando {s3_path} (suspect_id={suspect_id})")
@@ -25,9 +43,9 @@ def process_register_face(suspect_id, s3_path, metadata=None):
         # Baixa a imagem do S3 para a memória
         s3 = boto3.client(
             "s3",
-            aws_access_key_id="xxx",
-            aws_secret_access_key="xxx",
-            region_name="us-east-2"
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+            region_name=config.AWS_REGION
         )
 
         buffer = BytesIO()
@@ -70,7 +88,25 @@ def process_register_face(suspect_id, s3_path, metadata=None):
 
 def process_search_face(s3_path=None, top_k=5):
     """
-    Worker: busca suspeitos semelhantes (via S3 ou upload).
+    Processa a busca de uma face: baixa a imagem do S3, gera o embedding,
+    encontra faces semelhantes no Milvus e registra a consulta como is_query=True.
+
+    Args:
+        s3_path (str, optional): Caminho da imagem no formato s3://bucket/key.
+            Necessário para realizar a busca. Default é None.
+        top_k (int, optional): Número máximo de correspondências retornadas.
+            Default é 5.
+
+    Returns:
+        dict: Resultado da busca contendo:
+            - query_face_id (int): ID da face da consulta inserida no Milvus.
+            - matches (list): Lista de correspondências encontradas.
+            - s3_path (str): Caminho da imagem usada na busca.
+            - source (str): Indica que a busca veio do S3.
+
+    Raises:
+        Exception: Se ocorrer erro no download da imagem, geração do embedding
+            ou durante a busca no Milvus.
     """
     import boto3
     from io import BytesIO
@@ -92,9 +128,9 @@ def process_search_face(s3_path=None, top_k=5):
         # Baixa a imagem
         s3 = boto3.client(
             "s3",
-            aws_access_key_id="xxx",
-            aws_secret_access_key="xxx",
-            region_name="xxx"
+            aws_access_key_id=config.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=config.AWS_SECRET_ACCESS_KEY,
+            region_name=config.AWS_REGION
         )
 
         buffer = BytesIO()

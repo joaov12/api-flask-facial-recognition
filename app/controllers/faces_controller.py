@@ -12,7 +12,8 @@ from rq.job import Job
 faces_bp = Blueprint("faces", __name__)
 
 # Configura conexão e fila Redis
-redis_conn = Redis(host="localhost", port=6379, db=0)
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_conn = Redis.from_url(redis_url)
 queue = Queue("faces_register_queue", connection=redis_conn)
 
 # ============================================================
@@ -21,11 +22,29 @@ queue = Queue("faces_register_queue", connection=redis_conn)
 @faces_bp.route("/faces/register", methods=["POST"])
 def register_face():
     """
-    Registra uma face de suspeito.
-    Fonte da imagem:
-      - Upload local (campo 'image')
-      - S3 privado via boto3 (campo 's3_path': s3://bucket/key)
-    O processamento é enviado para a fila Redis.
+    Registra uma face de suspeito no sistema.
+
+    A imagem pode vir de duas fontes:
+        - Upload local (campo `image`)
+        - Caminho no S3 (campo `s3_path` no formato s3://bucket/key)
+
+    O registro funciona de duas formas:
+        - Upload local → processamento imediato (gera embedding e salva no Milvus)
+        - S3 → processamento assíncrono via Redis + RQ
+
+    Request Body (JSON ou form-data):
+        suspect_id (int | str): ID do suspeito (obrigatório).
+        metadata (str, optional): JSON contendo informações extras.
+        image (file, optional): Imagem enviada por upload.
+        s3_path (str, optional): Caminho S3 no formato s3://bucket/key.
+
+    Returns:
+        tuple:
+            - dict: Informações sobre o processamento ou job criado.
+            - int: Código de status HTTP.
+
+    Raises:
+        Exception: Em caso de erro interno durante processamento ou envio do job.
     """
     try:
         data = request.get_json(silent=True) or request.form
@@ -108,7 +127,24 @@ def register_face():
 @faces_bp.route("/faces/search", methods=["POST"])
 def search_faces():
     """
-    Recebe uma imagem (upload local ou via S3) e busca suspeitos semelhantes.
+    Realiza busca de suspeitos semelhantes com base na imagem fornecida.
+
+    Fontes aceitas:
+        - Upload local (campo `image`)
+        - Caminho S3 (`s3_path`) → processado via Redis + RQ
+
+    Request Body:
+        image (file, optional): Imagem enviada por upload.
+        s3_path (str, optional): Caminho s3://bucket/key.
+        top_k (int, optional): Número máximo de resultados retornados. Default = 5.
+
+    Returns:
+        tuple:
+            - dict: Dados da consulta, incluindo matches e metadados.
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Para falhas internas, incluindo download, embeddings ou Milvus.
     """
     try:
         import boto3
@@ -185,8 +221,23 @@ def search_faces():
 @faces_bp.route("/faces/suspects", methods=["GET"])
 def list_all_suspects():
     """
-    Lista todos os suspeitos cadastrados e suas faces associadas.
-    Inclui s3_path e source.
+    Lista todos os suspeitos cadastrados no Milvus com as faces associadas.
+
+    Cada registro inclui:
+        - face_id
+        - suspect_id
+        - timestamp
+        - metadata (convertido de JSON)
+        - s3_path
+        - source (s3 ou upload)
+
+    Returns:
+        tuple:
+            - dict: Estrutura contendo suspeitos e suas faces.
+            - int: Código de status HTTP.
+
+    Raises:
+        Exception: Caso haja erro ao acessar a collection do Milvus.
     """
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
@@ -245,7 +296,22 @@ def list_all_suspects():
 def list_faces_by_suspect(suspect_id):
     """
     Lista todas as faces associadas a um suspeito específico.
-    Inclui s3_path e source.
+
+    Args:
+        suspect_id (int): ID do suspeito consultado.
+
+    Returns:
+        tuple:
+            - dict: Detalhes das faces encontradas, incluindo:
+                - face_id
+                - timestamp
+                - metadata
+                - s3_path
+                - source
+            - int: Código de status HTTP.
+
+    Raises:
+        Exception: Em caso de falhas de acesso ao banco vetorial (Milvus).
     """
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
@@ -298,9 +364,27 @@ def list_faces_by_suspect(suspect_id):
 @faces_bp.route("/faces/all", methods=["GET"])
 def list_all_faces():
     """
-    Lista todos os embeddings cadastrados no Milvus (suspeitos + queries).
-    Suporta limite opcional via query param (?limit=100).
-    Agora exibe também o campo 's3_path' e 'source'.
+    Lista todas as faces cadastradas no Milvus, incluindo suspeitos e buscas.
+
+    Query Params:
+        limit (int, optional): Máximo de registros retornados. Default = 1000.
+
+    Cada item retorna:
+        - face_id
+        - suspect_id
+        - is_query
+        - timestamp
+        - metadata
+        - s3_path
+        - source (s3 | upload)
+
+    Returns:
+        tuple:
+            - dict: Estrutura contendo todas as faces.
+            - int: Código de status HTTP.
+
+    Raises:
+        Exception: Em caso de falha ao acessar Milvus.
     """
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
@@ -352,8 +436,19 @@ def list_all_faces():
 @faces_bp.route("/faces/delete/<int:face_id>", methods=["DELETE"])
 def delete_face(face_id):
     """
-    Remove um embedding específico do Milvus.
-    """
+    Remove uma face específica da collection do Milvus.
+
+    Args:
+        face_id (int): ID da face a ser removida.
+
+    Returns:
+        tuple:
+            - dict: Informações sobre a operação.
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Em caso de erro no acesso ao Milvus ou remoção.
+    """ 
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
         from pymilvus import Collection, utility
@@ -386,7 +481,17 @@ def delete_face(face_id):
 @faces_bp.route("/faces/clear", methods=["DELETE"])
 def clear_collection():
     """
-    Remove toda a collection 'faces' do Milvus (uso administrativo).
+    Remove completamente a collection 'faces' do Milvus.
+
+    Uso exclusivo para fins administrativos.
+
+    Returns:
+        tuple:
+            - dict: Mensagem de confirmação.
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Caso ocorra falha durante a operação no Milvus.
     """
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
@@ -412,7 +517,27 @@ def clear_collection():
 @faces_bp.route("/faces/update/<int:face_id>", methods=["PUT"])
 def update_face(face_id):
     """
-    Atualiza o 'suspect_id' e/ou os 'metadata' de uma face específica no Milvus.
+    Atualiza parcialmente um registro facial existente no Milvus.
+
+    Pode alterar:
+        - suspect_id
+        - metadata (merge entre antigo e novo)
+        - mantém: embedding, timestamp, s3_path, is_query
+
+    Args:
+        face_id (int): ID da face a ser atualizada.
+
+    Body:
+        suspect_id (int, optional): Novo ID do suspeito.
+        metadata (str, optional): JSON de metadados a serem mesclados.
+
+    Returns:
+        tuple:
+            - dict: Dados atualizados.
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Caso não encontre a face ou falhe na reinserção.
     """
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
@@ -513,8 +638,19 @@ def update_face(face_id):
 @faces_bp.route("/faces/delete/suspect/<int:suspect_id>", methods=["DELETE"])
 def delete_faces_by_suspect(suspect_id):
     """
-    Remove todas as faces associadas a um suspeito específico (suspect_id).
-    """
+    Remove todas as faces associadas a um suspeito específico.
+
+    Args:
+        suspect_id (int): ID do suspeito alvo.
+
+    Returns:
+        tuple:
+            - dict: IDs removidos e quantidade total.
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Em falhas durante a operação no Milvus.
+    """ 
     try:
         from app.services.milvus_service import connect_milvus, COLLECTION_NAME
         from pymilvus import Collection, utility
@@ -560,10 +696,29 @@ def delete_faces_by_suspect(suspect_id):
 @faces_bp.route("/jobs/status/<job_id>", methods=["GET"])
 def get_job_status(job_id):
     """
-    Retorna o status e o resultado de um job na fila Redis.
+    Consulta o status de um job armazenado na fila Redis (RQ).
+
+    Args:
+        job_id (str): Identificador do job.
+
+    Returns:
+        tuple:
+            - dict: Informações completas do job:
+                - job_id
+                - status
+                - enqueued_at
+                - started_at
+                - ended_at
+                - result
+                - error
+            - int: Código HTTP.
+
+    Raises:
+        Exception: Caso o job não exista ou falhe a consulta.
     """
     try:
-        redis_conn = Redis(host="localhost", port=6379, db=0)
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        redis_conn = Redis.from_url(redis_url)
         job = Job.fetch(job_id, connection=redis_conn)
 
         data = {

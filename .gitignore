@@ -10,3 +10,4 @@ __pycache__/
 
 # VS Code
 .vscode/
+config.py
