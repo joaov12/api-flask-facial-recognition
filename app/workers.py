@@ -8,7 +8,7 @@ import traceback
 def process_register_face(suspect_id, s3_path, metadata=None):
     """
     Processa o registro de uma face: baixa a imagem do S3, gera o embedding
-    e salva o registro no Milvus.
+    e salva o registro no Milvus. Ao finalizar, notifica o Java via webhook.
 
     Args:
         suspect_id (int or str): ID do suspeito associado à face registrada.
@@ -26,6 +26,8 @@ def process_register_face(suspect_id, s3_path, metadata=None):
         Exception: Caso ocorra erro no download da imagem, geração do embedding
             ou inserção no Milvus.
     """
+    face_id = None
+    
     try:
         print(f"[Worker] Processando {s3_path} (suspect_id={suspect_id})")
 
@@ -54,14 +56,14 @@ def process_register_face(suspect_id, s3_path, metadata=None):
         buffer.name = key.split("/")[-1]  # nome do arquivo, útil se o modelo usa extensão
         print(f"[Worker] Download concluído ({len(buffer.getvalue())} bytes).")
 
-        #  Gera o embedding com a imagem em memória
+        # Gera o embedding com a imagem em memória
         embedding_result, status = generate_embeddings(buffer)
         if status != 200:
             raise Exception(f"Falha ao gerar embedding: {embedding_result}")
 
         embedding = embedding_result["embedding"]
 
-        #  Insere no Milvus
+        # Insere no Milvus
         face_id = insert_face(
             suspect_id=int(suspect_id),
             embedding=embedding,
@@ -71,6 +73,14 @@ def process_register_face(suspect_id, s3_path, metadata=None):
         )
 
         print(f"[Worker] ✅ Face {face_id} inserida com sucesso (suspect_id={suspect_id})")
+
+        # 🆕 Notifica o Java que o processamento foi concluído com sucesso
+        notify_java_completion(
+            suspect_id=suspect_id,
+            face_id=face_id,
+            s3_path=s3_path,
+            status="completed"
+        )
 
         return {
             "message": "Face registrada com sucesso.",
@@ -82,7 +92,17 @@ def process_register_face(suspect_id, s3_path, metadata=None):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[Worker]  Erro ao processar {s3_path}: {e}")
+        print(f"[Worker] ❌ Erro ao processar {s3_path}: {e}")
+        
+        # 🆕 Notifica o Java que o processamento falhou
+        notify_java_completion(
+            suspect_id=suspect_id,
+            face_id=face_id,
+            s3_path=s3_path,
+            status="failed",
+            error=str(e)
+        )
+        
         raise e
 
 
@@ -173,3 +193,62 @@ def process_search_face(s3_path=None, top_k=5):
         traceback.print_exc()
         print(f"[Worker]  Erro ao processar busca: {e}")
         raise e
+    
+
+def notify_java_completion(suspect_id, face_id, s3_path, status, error=None):
+    """
+    Notifica o backend Java que o processamento da face foi concluído
+    (com sucesso ou falha) via webhook HTTP.
+
+    Args:
+        suspect_id (int or str): ID do suspeito.
+        face_id (int or None): ID da face inserida no Milvus (None se falhou).
+        s3_path (str): Caminho da imagem no S3.
+        status (str): Status do processamento ('completed' ou 'failed').
+        error (str, optional): Mensagem de erro caso status seja 'failed'.
+
+    Returns:
+        None
+    """
+    import requests
+    from rq import get_current_job
+    
+    # Obtém o job_id do RQ (se disponível)
+    job = get_current_job()
+    job_id = job.get_id() if job else None
+    
+    # URL do webhook configurada no arquivo de config
+    webhook_url = config.JAVA_WEBHOOK_URL
+    
+    # Monta o payload do webhook
+    payload = {
+        "suspectId": int(suspect_id),
+        "jobId": job_id,
+        "status": status,
+        "message": "Processamento concluído com sucesso" if status == "completed" else f"Erro: {error}",
+        "faceId": int(face_id) if face_id else None,
+        "s3Path": s3_path
+    }
+    
+    try:
+        print(f"[Worker] 🔔 Enviando webhook para Java: {webhook_url}")
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            timeout=10,  # timeout de 10 segundos
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            print(f"[Worker] ✅ Webhook enviado com sucesso: {response.status_code}")
+        else:
+            print(f"[Worker] ⚠️ Webhook retornou status inesperado: {response.status_code}")
+            print(f"[Worker] Response: {response.text}")
+            
+    except requests.exceptions.Timeout:
+        print(f"[Worker] ⚠️ Timeout ao enviar webhook para Java")
+    except requests.exceptions.ConnectionError:
+        print(f"[Worker] ⚠️ Erro de conexão ao enviar webhook para Java")
+    except Exception as e:
+        print(f"[Worker] ⚠️ Erro inesperado ao enviar webhook: {e}")
+        # Não propaga a exceção para não interromper o job principal
