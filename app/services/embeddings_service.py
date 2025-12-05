@@ -25,8 +25,6 @@ def generate_embeddings(image_file):
             bounding_box = detections[i]["box"]
             all_boxes.append(bounding_box)
 
-            # tenta usar exatamente a chamada do notebook;
-            # se falhar, usa o fallback (pt1, pt2)
             try:
                 cv2.rectangle(image_copy, bounding_box, color=(255, 0, 0), thickness=3)
             except Exception:
@@ -149,14 +147,12 @@ def detect_and_search_faces(image_file, top_k=3):
         # desenhar boxes usando o padrão que funcionou no seu notebook
         for i in range(len(detections)):
             box = all_boxes[i]
-            # cor: vermelho para vencedor, verde para os demais
-            color = (255, 0, 0) if i == winner_index else (0, 255, 0)
+            # cor: vermelho para vencedor, azul para os demais
+            color = (255, 0, 0) if i == winner_index else (0, 0, 255)
 
             try:
-                # tenta exatamente a chamada que você usa no notebook
                 cv2.rectangle(image_copy, box, color=color, thickness=3)
             except Exception:
-                # fallback para formato ((x1,y1),(x2,y2))
                 x1, y1, x2, y2 = map(int, box)
                 cv2.rectangle(image_copy, (x1, y1), (x2, y2), color, 3)
 
