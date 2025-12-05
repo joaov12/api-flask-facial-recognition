@@ -107,6 +107,21 @@ def process_register_face(suspect_id, s3_path, metadata=None):
 
 
 def process_search_face_worker(s3_path=None, top_k=5):
+    """
+    Processa a busca de uma face: baixa a imagem do S3, gera o embedding,
+    encontra faces semelhantes no Milvus e registra a consulta como is_query=True.
+
+    Retorno (exemplo):
+    {
+        "source": "s3",
+        "original_s3": "s3://bucket/key",
+        "original_url": "https://bucket.s3.region.amazonaws.com/key",
+        "processed_s3": "s3://bucket/key_box-faces_123",
+        "processed_url": "https://bucket.s3.region.amazonaws.com/key_box-faces_123",
+        "faces_count": 3,
+        ... # resto do result vindo de detect_and_search_faces (winner_match, boxes, matches, etc)
+    }
+    """
     import boto3
     from io import BytesIO
     import traceback
@@ -134,9 +149,8 @@ def process_search_face_worker(s3_path=None, top_k=5):
             region_name=config.AWS_REGION
         )
 
-        # ---- Gerar URL pública da imagem original ----
+        # ---- URL pública (sem credenciais) ----
         original_url = f"https://{bucket}.s3.{config.AWS_REGION}.amazonaws.com/{key}"
-
 
         # ---- Baixar imagem original ----
         buffer = BytesIO()
@@ -150,7 +164,9 @@ def process_search_face_worker(s3_path=None, top_k=5):
         if status != 200:
             raise Exception(f"Falha no processamento: {result}")
 
-        processed_local_path = result["processed_image_path"]
+        processed_local_path = result.get("processed_image_path")
+        if not processed_local_path or not os.path.exists(processed_local_path):
+            raise Exception("processed_image_path inválido ou arquivo não encontrado.")
 
         # ---- Ler imagem processada ----
         with open(processed_local_path, "rb") as f:
@@ -168,27 +184,51 @@ def process_search_face_worker(s3_path=None, top_k=5):
         )
 
         processed_s3_path = f"s3://{bucket}/{new_key}"
-
-        # ---- Criar URL pública da imagem processada ----
         processed_url = f"https://{bucket}.s3.{config.AWS_REGION}.amazonaws.com/{new_key}"
-
 
         print(f"[Worker]  Imagem processada enviada ao S3: {processed_s3_path}")
 
-        # ---- Retorno final simplificado ----
-        return {
+        # ---- Calcular number of faces detected (heurística robusta) ----
+        faces_count = 0
+        # checar chaves comuns que podem conter listas de deteccoes/caixas
+        for k in ("boxes", "faces", "matches", "detections"):
+            val = result.get(k)
+            if isinstance(val, list):
+                faces_count = len(val)
+                break
+
+        # fallback: alguns workers retornam 'winner_match' e 'winner_index' ou 'boxes_count'
+        if faces_count == 0:
+            if isinstance(result.get("boxes_count"), int):
+                faces_count = result.get("boxes_count")
+            elif isinstance(result.get("winner_match"), dict) and result.get("winner_match").get("box"):
+                # se só houver um vencedor, contar 1 (mas preferimos provavel lista)
+                faces_count = 1
+            elif result.get("winner_index") is not None:
+                # se tiver índice de winner e também boxes_count em result, usar isso
+                boxes = result.get("boxes")
+                if isinstance(boxes, list):
+                    faces_count = len(boxes)
+
+        # ---- Montar retorno final (mantendo todo result) ----
+        final = {
             "source": "s3",
             "original_s3": s3_path,
-            "original_url": f"https://{bucket}.s3.{config.AWS_REGION}.amazonaws.com/{key}",
+            "original_url": original_url,
             "processed_s3": processed_s3_path,
-            "processed_url": f"https://{bucket}.s3.{config.AWS_REGION}.amazonaws.com/{new_key}",
-            **result
+            "processed_url": processed_url,
+            "faces_count": faces_count,
+            **(result if isinstance(result, dict) else {"result": result})
         }
+
+        return final
 
     except Exception as e:
         print("[Worker] Erro no process_search_face_worker:")
         traceback.print_exc()
+        # Retorna dicionário de erro consistente para o endpoint consumir
         return {"error": str(e)}
+
 
     
 
