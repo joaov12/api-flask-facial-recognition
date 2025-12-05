@@ -123,75 +123,50 @@ def register_face():
         traceback.print_exc()
         return jsonify({"error": f"Erro interno: {str(e)}"}), 500
 
-
 @faces_bp.route("/faces/search", methods=["POST"])
 def search_faces():
-    """
-    Realiza busca de suspeitos semelhantes com base na imagem fornecida.
-
-    Fontes aceitas:
-        - Upload local (campo `image`)
-        - Caminho S3 (`s3_path`) → processado via Redis + RQ
-
-    Request Body:
-        image (file, optional): Imagem enviada por upload.
-        s3_path (str, optional): Caminho s3://bucket/key.
-        top_k (int, optional): Número máximo de resultados retornados. Default = 5.
-
-    Returns:
-        tuple:
-            - dict: Dados da consulta, incluindo matches e metadados.
-            - int: Código HTTP.
-
-    Raises:
-        Exception: Para falhas internas, incluindo download, embeddings ou Milvus.
-    """
     try:
-        import boto3
-        from io import BytesIO
-        import json
-        from app.workers import process_search_face
+        from app.services.embeddings_service import detect_and_search_faces
+        from app.workers import process_search_face_worker
 
         data = request.get_json(silent=True) or request.form
         s3_path = data.get("s3_path")
         top_k = int(data.get("top_k", 5))
-        image_file = None
 
         # =====================================================
-        #   Upload local
+        # 🟢 CASO 1: Upload local — processamento IMEDIATO
         # =====================================================
         if "image" in request.files:
             image_file = request.files["image"]
 
-            embedding_result, status = generate_embeddings(image_file)
+            result, status = detect_and_search_faces(image_file, top_k=top_k)
             if status != 200:
-                return jsonify(embedding_result), status
+                return jsonify(result), status
 
-            embedding = embedding_result["embedding"]
-            matches = search_similar_faces(embedding, top_k=top_k)
-            query_face_id = insert_face(
-                suspect_id=None,
-                embedding=embedding,
-                is_query=True,
-                metadata={"source": "upload"},
-                s3_path=None
-            )
+            winner = result.get("winner_match")
+            suspect_metadata = None
+            if winner and winner.get("suspect_id") is not None:
+                suspect_metadata = get_suspect_metadata(winner["suspect_id"])
+                print(">>> SUSPECT_METADATA ===>", suspect_metadata)
 
             return jsonify({
-                "query_face_id": query_face_id,
-                "source": "upload",
-                "matches": matches
+                **result,
+                "original_s3": None,
+                "processed_s3": None,
+                "original_url": None,
+                "processed_url": None,
+                "suspect_metadata": suspect_metadata
             }), 200
 
         # =====================================================
-        #   Caso: imagem S3 — enfileirar job no Redis
+        # 🟡 CASO 2: Busca via S3 — enviar para Redis
         # =====================================================
-        elif s3_path:
+        if s3_path:
             if not s3_path.startswith("s3://"):
-                return jsonify({"error": "Formato inválido em 's3_path'. Use s3://bucket/key"}), 400
+                return jsonify({"error": "Formato inválido para 's3_path'. Use s3://bucket/key"}), 400
 
             job = queue.enqueue(
-                process_search_face,
+                process_search_face_worker,
                 s3_path,
                 top_k,
                 result_ttl=3600,
@@ -199,20 +174,19 @@ def search_faces():
             )
 
             return jsonify({
-                "message": "Busca enviada para fila Redis.",
+                "message": "Busca enviada para a fila.",
                 "job_id": job.get_id(),
                 "status": job.get_status(),
                 "s3_path": s3_path,
                 "source": "s3"
             }), 202
 
-        else:
-            return jsonify({"error": "Envie uma imagem (campo 'image') ou um 's3_path'."}), 400
+        return jsonify({"error": "Forneça 'image' ou 's3_path'."}), 400
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return jsonify({"error": f"Erro interno: {str(e)}"}), 500
+
 
 
 # ============================================================
@@ -689,51 +663,135 @@ def delete_faces_by_suspect(suspect_id):
         traceback.print_exc()
         return jsonify({"error": f"Erro interno: {str(e)}"}), 500
 
+def build_job_response(result):
+    """
+    Organiza o retorno final tanto para job de registro quanto job de busca.
+    """
+
+    # ----------------------------------------------------
+    # CASO 1: Job de REGISTRO (process_register_face)
+    # ----------------------------------------------------
+    if (
+        isinstance(result, dict)
+        and "face_id" in result
+        and "suspect_id" in result
+        and "s3_path" in result
+    ):
+        return {
+            "type": "register",
+            "message": result.get("message"),
+            "face_id": result.get("face_id"),
+            "suspect_id": result.get("suspect_id"),
+            "s3_path": result.get("s3_path"),
+            "metadata": result.get("metadata"),  # já retorna tudo
+        }
+
+    # ----------------------------------------------------
+    # CASO 2: Job de BUSCA MULTI-ROSTO (process_search_face_worker)
+    # ----------------------------------------------------
+    if isinstance(result, dict) and "winner_match" in result:
+
+        winner = result.get("winner_match")
+
+        suspect_metadata = None
+        if winner and winner.get("suspect_id") is not None:
+            suspect_metadata = get_suspect_metadata(winner["suspect_id"])
+
+        # Normalização segura do metadata
+        meta = {}
+        if suspect_metadata:
+            raw_meta = suspect_metadata.get("metadata")
+            if isinstance(raw_meta, dict):
+                meta = raw_meta
+            elif isinstance(raw_meta, str):
+                try:
+                    meta = json.loads(raw_meta)
+                except:
+                    meta = {}
+
+        return {
+            "type": "search",
+            "boxes_count": len(result.get("boxes", [])),
+            "original_s3": result.get("original_s3"),
+            "original_url": result.get("original_url"),
+            "processed_s3": result.get("processed_s3"),
+            "processed_url": result.get("processed_url"),
+
+            "winner": {
+                "index": result.get("winner_index"),
+                "box": result.get("winner_box"),
+                "suspect_id": winner.get("suspect_id") if winner else None,
+                "match_distance": winner.get("distance") if winner else None,
+                "face_id": result.get("face_id"),
+            },
+
+            "suspect": {
+                "id": suspect_metadata.get("suspect_id") if suspect_metadata else None,
+                "metadata": meta,  # Retorna TUDO
+            },
+        }
+
+    # ----------------------------------------------------
+    # CASO 3: Resultado desconhecido
+    # ----------------------------------------------------
+    return {"type": "unknown", "raw_result": result}
+
 
 # ============================================================
 #  Rota 10 - Pegar status do job
 # ============================================================
 @faces_bp.route("/jobs/status/<job_id>", methods=["GET"])
 def get_job_status(job_id):
-    """
-    Consulta o status de um job armazenado na fila Redis (RQ).
-
-    Args:
-        job_id (str): Identificador do job.
-
-    Returns:
-        tuple:
-            - dict: Informações completas do job:
-                - job_id
-                - status
-                - enqueued_at
-                - started_at
-                - ended_at
-                - result
-                - error
-            - int: Código HTTP.
-
-    Raises:
-        Exception: Caso o job não exista ou falhe a consulta.
-    """
     try:
+        from redis import Redis
+        from rq.job import Job
+        import os
+
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         redis_conn = Redis.from_url(redis_url)
-        job = Job.fetch(job_id, connection=redis_conn)
 
-        data = {
+        # Buscar o job nas filas
+        job = None
+        for queue_name in ["faces_register_queue", "faces_search_queue"]:
+            try:
+                job = Job.fetch(job_id, connection=redis_conn)
+                break
+            except:
+                pass
+
+        if job is None:
+            return jsonify({"error": "Job não encontrado"}), 404
+
+        response = {
             "job_id": job.id,
             "status": job.get_status(),
-            "enqueued_at": str(job.enqueued_at) if job.enqueued_at else None,
             "started_at": str(job.started_at) if job.started_at else None,
             "ended_at": str(job.ended_at) if job.ended_at else None,
-            "result": job.result if job.result is not None else None,
             "error": str(job.exc_info) if job.is_failed and job.exc_info else None
         }
 
-        return jsonify(data), 200
+        # Job ainda executando
+        if job.result is None:
+            return jsonify(response), 200
+
+        raw_result = job.result
+
+        # Caso o worker retorne string (erro interno)
+        if isinstance(raw_result, str):
+            response["error"] = raw_result
+            return jsonify(response), 500
+
+        # Se o worker retornou algo inválido
+        if not isinstance(raw_result, dict):
+            response["error"] = f"Worker retornou tipo inválido: {type(raw_result).__name__}"
+            response["raw_result"] = str(raw_result)
+            return jsonify(response), 500
+
+        # Caso normal: devolver exatamente o que o worker retornou
+        response["result"] = raw_result
+        return jsonify(response), 200
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": f"Job não encontrado ou erro interno: {str(e)}"}), 404
+        return jsonify({"error": f"Erro interno: {str(e)}"}), 500
