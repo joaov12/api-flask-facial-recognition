@@ -124,74 +124,131 @@ def register_face():
         return jsonify({"error": f"Erro interno: {str(e)}"}), 500
 
 
+
+# ============================================================
+#  Rota 2 - Realiza a busca de rostos na imagem enviada
+# ============================================================
 @faces_bp.route("/faces/search", methods=["POST"])
 def search_faces():
     """
-    Realiza busca de suspeitos semelhantes com base na imagem fornecida.
+    Realiza a busca de rostos na imagem enviada, podendo operar de duas formas:
+    (1) Processamento imediato (upload local)
+    (2) Processamento assíncrono via S3 + Redis/RQ
 
-    Fontes aceitas:
-        - Upload local (campo `image`)
-        - Caminho S3 (`s3_path`) → processado via Redis + RQ
+    Fluxo geral:
+        - O cliente envia uma imagem ou um caminho S3.
+        - Se a imagem for enviada diretamente, a busca é processada na hora.
+        - Se o caminho S3 for enviado, o processamento é delegado ao worker assíncrono.
 
-    Request Body:
-        image (file, optional): Imagem enviada por upload.
-        s3_path (str, optional): Caminho s3://bucket/key.
-        top_k (int, optional): Número máximo de resultados retornados. Default = 5.
+    -------------------------------
+    CASO 1 — Upload local (processamento imediato)
+    -------------------------------
+    Quando o cliente envia um arquivo em `multipart/form-data`:
+        - A imagem é processada em tempo real pelo método `detect_and_search_faces()`.
+        - O sistema detecta múltiplos rostos, computa embeddings e faz a busca no Milvus.
+        - Identifica o rosto com maior match (`winner_match`).
+        - NÃO realiza upload para o S3 neste modo.
+        - Retorna diretamente:
+            - bounding boxes
+            - rosto vencedor
+            - dados do match
+            - caminho local da imagem processada
+            - metadata do suspeito (opcional, se existir)
+            - original_s3 / processed_s3 = None
+            - original_url / processed_url = None
+
+    -------------------------------
+    CASO 2 — Busca via S3 (processamento assíncrono)
+    -------------------------------
+    Quando o cliente envia:
+        {
+            "s3_path": "s3://bucket/key",
+            "top_k": 5
+        }
+
+        - A requisição é enviada para a fila Redis através de um job RQ.
+        - O worker executará `process_search_face_worker`, que:
+            - Baixa a imagem do S3
+            - Detecta rostos
+            - Busca no Milvus
+            - Gera imagem processada com boxes coloridas
+            - Faz upload da imagem de saída para o S3
+            - Retorna as URLs e dados da análise
+
+        A resposta imediata do endpoint será:
+            {
+                "message": "Busca enviada para a fila.",
+                "job_id": "...",
+                "status": "...",
+                "s3_path": "...",
+                "source": "s3"
+            }
+
+        O resultado final deve ser consultado via `/jobs/status/<job_id>`.
+
+    Args:
+        Nenhum parâmetro direto via função.
+        Espera-se no body:
+            - image (FileStorage): imagem enviada diretamente (opcional)
+            - s3_path (str): caminho S3 (opcional, formato s3://bucket/key)
+            - top_k (int): quantidade de matches retornados pelo Milvus (default: 5)
 
     Returns:
-        tuple:
-            - dict: Dados da consulta, incluindo matches e metadados.
-            - int: Código HTTP.
+        Response (Flask JSON):
+            - 200: processamento local concluído
+            - 202: job enviado para fila (modo S3)
+            - 400: requisição inválida (sem image e sem s3_path)
+            - 500: erro interno
 
-    Raises:
-        Exception: Para falhas internas, incluindo download, embeddings ou Milvus.
+    Observações:
+        - Apenas UM dos parâmetros deve ser enviado: "image" OU "s3_path".
+        - O caminho S3 deve obrigatoriamente seguir o padrão `s3://bucket/key`.
+        - O retorno do processamento via worker incluirá URLs públicas da imagem processada.
+        - A integração com o Milvus ocorre dentro de `detect_and_search_faces()` e
+          `process_search_face_worker()`.
     """
     try:
-        import boto3
-        from io import BytesIO
-        import json
-        from app.workers import process_search_face
+        from app.services.embeddings_service import detect_and_search_faces
+        from app.workers import process_search_face_worker
 
         data = request.get_json(silent=True) or request.form
         s3_path = data.get("s3_path")
         top_k = int(data.get("top_k", 5))
-        image_file = None
 
         # =====================================================
-        #   Upload local
+        # 🟢 CASO 1: Upload local — processamento IMEDIATO
         # =====================================================
         if "image" in request.files:
             image_file = request.files["image"]
 
-            embedding_result, status = generate_embeddings(image_file)
+            result, status = detect_and_search_faces(image_file, top_k=top_k)
             if status != 200:
-                return jsonify(embedding_result), status
+                return jsonify(result), status
 
-            embedding = embedding_result["embedding"]
-            matches = search_similar_faces(embedding, top_k=top_k)
-            query_face_id = insert_face(
-                suspect_id=None,
-                embedding=embedding,
-                is_query=True,
-                metadata={"source": "upload"},
-                s3_path=None
-            )
+            winner = result.get("winner_match")
+            suspect_metadata = None
+            if winner and winner.get("suspect_id") is not None:
+                suspect_metadata = get_suspect_metadata(winner["suspect_id"])
+                print(">>> SUSPECT_METADATA ===>", suspect_metadata)
 
             return jsonify({
-                "query_face_id": query_face_id,
-                "source": "upload",
-                "matches": matches
+                **result,
+                "original_s3": None,
+                "processed_s3": None,
+                "original_url": None,
+                "processed_url": None,
+                "suspect_metadata": suspect_metadata
             }), 200
 
         # =====================================================
-        #   Caso: imagem S3 — enfileirar job no Redis
+        # 🟡 CASO 2: Busca via S3 — enviar para Redis
         # =====================================================
-        elif s3_path:
+        if s3_path:
             if not s3_path.startswith("s3://"):
-                return jsonify({"error": "Formato inválido em 's3_path'. Use s3://bucket/key"}), 400
+                return jsonify({"error": "Formato inválido para 's3_path'. Use s3://bucket/key"}), 400
 
             job = queue.enqueue(
-                process_search_face,
+                process_search_face_worker,
                 s3_path,
                 top_k,
                 result_ttl=3600,
@@ -199,20 +256,19 @@ def search_faces():
             )
 
             return jsonify({
-                "message": "Busca enviada para fila Redis.",
+                "message": "Busca enviada para a fila.",
                 "job_id": job.get_id(),
                 "status": job.get_status(),
                 "s3_path": s3_path,
                 "source": "s3"
             }), 202
 
-        else:
-            return jsonify({"error": "Envie uma imagem (campo 'image') ou um 's3_path'."}), 400
+        return jsonify({"error": "Forneça 'image' ou 's3_path'."}), 400
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return jsonify({"error": f"Erro interno: {str(e)}"}), 500
+
 
 
 # ============================================================
@@ -696,44 +752,114 @@ def delete_faces_by_suspect(suspect_id):
 @faces_bp.route("/jobs/status/<job_id>", methods=["GET"])
 def get_job_status(job_id):
     """
-    Consulta o status de um job armazenado na fila Redis (RQ).
+    Recupera o status de um job enfileirado no Redis/RQ e retorna o resultado
+    produzido pelo worker responsável pela tarefa (registro de face ou busca facial).
+
+    Este endpoint permite que o cliente consulte periodicamente o status de um
+    processamento assíncrono iniciado anteriormente, retornando informações como:
+    - Status atual (queued, started, finished, failed)
+    - Horário de início e término
+    - Resultado retornado pelo worker (caso já concluído)
+    - Informações sobre erros, se houver
+
+    Fluxo do processamento:
+        1. Conecta ao Redis usando a URL configurada na aplicação.
+        2. Tenta localizar o job em uma das filas usadas pelo sistema
+           ("faces_register_queue" ou "faces_search_queue").
+        3. Caso o job não exista, retorna erro 404.
+        4. Caso o job exista, monta um payload contendo:
+            - ID do job
+            - status
+            - timestamps (início/término)
+            - mensagem de erro, se o job falhou
+        5. Se o job estiver em execução ou aguardando, retorna os metadados sem resultado.
+        6. Quando o job já finalizou:
+            - Se o worker retornou uma string → erro interno, retorna 500.
+            - Se retornou algo que não seja dict → erro de formato.
+            - Caso seja válido, retorna o conteúdo completo em `response["result"]`.
 
     Args:
-        job_id (str): Identificador do job.
+        job_id (str):
+            ID do job gerado pelo RQ no momento em que a tarefa foi enfileirada.
 
     Returns:
-        tuple:
-            - dict: Informações completas do job:
-                - job_id
-                - status
-                - enqueued_at
-                - started_at
-                - ended_at
-                - result
-                - error
-            - int: Código HTTP.
+        Response (Flask JSON):
+            Estrutura semelhante ao exemplo abaixo:
 
-    Raises:
-        Exception: Caso o job não exista ou falhe a consulta.
+            {
+                "job_id": "abc123",
+                "status": "finished",
+                "started_at": "...",
+                "ended_at": "...",
+                "error": null,
+                "result": {
+                    ... conteúdo retornado pelo worker ...
+                }
+            }
+
+            - Código HTTP 200 para sucesso.
+            - Código 404 caso o job não exista.
+            - Código 500 para erros internos ou retorno inválido do worker.
+
+    Observações:
+        - O campo "result" só é incluído quando o job finaliza com sucesso.
+        - Workers são responsáveis por retornar um dict válido; caso retornem outro tipo,
+          o endpoint rejeita o formato e retorna erro 500.
+        - O endpoint NÃO manipula ou transforma o conteúdo retornado pelo worker, apenas
+          repassa diretamente para o cliente.
+        - Útil para integrações com front-end ou outros serviços que precisam acompanhar
+          tarefas assíncronas como registro e busca facial.
     """
     try:
+        from redis import Redis
+        from rq.job import Job
+        import os
+
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         redis_conn = Redis.from_url(redis_url)
-        job = Job.fetch(job_id, connection=redis_conn)
 
-        data = {
+        # Buscar o job nas filas
+        job = None
+        for queue_name in ["faces_register_queue", "faces_search_queue"]:
+            try:
+                job = Job.fetch(job_id, connection=redis_conn)
+                break
+            except:
+                pass
+
+        if job is None:
+            return jsonify({"error": "Job não encontrado"}), 404
+
+        response = {
             "job_id": job.id,
             "status": job.get_status(),
-            "enqueued_at": str(job.enqueued_at) if job.enqueued_at else None,
             "started_at": str(job.started_at) if job.started_at else None,
             "ended_at": str(job.ended_at) if job.ended_at else None,
-            "result": job.result if job.result is not None else None,
             "error": str(job.exc_info) if job.is_failed and job.exc_info else None
         }
 
-        return jsonify(data), 200
+        # Job ainda executando
+        if job.result is None:
+            return jsonify(response), 200
+
+        raw_result = job.result
+
+        # Caso o worker retorne string (erro interno)
+        if isinstance(raw_result, str):
+            response["error"] = raw_result
+            return jsonify(response), 500
+
+        # Se o worker retornou algo inválido
+        if not isinstance(raw_result, dict):
+            response["error"] = f"Worker retornou tipo inválido: {type(raw_result).__name__}"
+            response["raw_result"] = str(raw_result)
+            return jsonify(response), 500
+
+        # Caso normal: devolver exatamente o que o worker retornou
+        response["result"] = raw_result
+        return jsonify(response), 200
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": f"Job não encontrado ou erro interno: {str(e)}"}), 404
+        return jsonify({"error": f"Erro interno: {str(e)}"}), 500
