@@ -10,3 +10,4 @@ pymilvus
 boto3
 redis 
 rq
+gunicorn

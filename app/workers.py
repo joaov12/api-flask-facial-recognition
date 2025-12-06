@@ -1,9 +1,15 @@
 from app.services.milvus_service import insert_face, search_similar_faces
-from app.services.embeddings_service import generate_embeddings
+from app.services.embeddings_service import generate_embeddings, detect_and_search_faces
+from models.facenet import get_facenet_model
 import boto3
 import config
 from io import BytesIO
 import traceback
+
+# Carregar o modelo uma vez ao iniciar o worker:
+print("[Worker] Carregando FaceNet no processo do worker ...")
+_ = get_facenet_model()
+print("[Worker] FaceNet carregado no worker.")
 
 def process_register_face(suspect_id, s3_path, metadata=None):
     """

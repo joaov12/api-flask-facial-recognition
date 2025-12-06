@@ -116,6 +116,7 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: facial_worker
+    command: ["python", "run_worker.py"]
     environment:
       REDIS_URL: redis://redis:6379/0 
       MILVUS_HOST: milvus
