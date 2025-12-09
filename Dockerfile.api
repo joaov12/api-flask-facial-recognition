@@ -15,5 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia o restante do código da aplicação
 COPY . .
 
-# Comando para rodar o app
-CMD ["python", "main.py"]
+# Expõe porta
+EXPOSE 5000
+
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "1", "--threads", "2", "main:app"]

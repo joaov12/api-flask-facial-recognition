@@ -1,5 +1,4 @@
 from flask import Blueprint, request, jsonify
-from app.services.embeddings_service import generate_embeddings
 from app.services.milvus_service import *
 import boto3
 from io import BytesIO
@@ -62,31 +61,29 @@ def register_face():
             metadata = {"raw": metadata_raw}
 
         # =====================================================
-        # Caso: Upload local
+        # Caso: Upload local → enviar para a fila (processamento no worker)
         # =====================================================
         if "image" in request.files:
             image_file = request.files["image"]
 
-            embedding_result, status = generate_embeddings(image_file)
-            if status != 200:
-                return jsonify(embedding_result), status
-
-            embedding = embedding_result["embedding"]
-
-            face_id = insert_face(
-                suspect_id=suspect_id,
-                embedding=embedding,
-                is_query=False,
-                metadata=metadata,
-                s3_path=None
+            job = queue.enqueue(
+                process_register_face,
+                suspect_id,
+                None,          # s3_path não usado
+                metadata,
+                image_file.read(),  # enviamos bytes da imagem
+                result_ttl=3600,
+                failure_ttl=3600
             )
 
             return jsonify({
-                "message": "Face registrada com sucesso (upload local).",
-                "face_id": face_id,
+                "message": "Upload recebido. Processamento enviado ao worker.",
+                "job_id": job.get_id(),
+                "status": job.get_status(),
                 "suspect_id": suspect_id,
                 "source": "upload"
-            }), 201
+            }), 202
+
 
         # =====================================================
         # Caso: Imagem no S3 (via boto3 + Redis)
