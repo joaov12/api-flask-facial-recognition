@@ -264,7 +264,7 @@ def process_search_face_async_worker(request_id, s3_path, top_k=5):
         notify_java_search_completion(
             request_id=request_id,
             suspect_id=suspect_id,
-            s3_path=result.get("processed_s3"),
+            s3_path=result.get("processed_url"),
             status="completed"
         )
         
