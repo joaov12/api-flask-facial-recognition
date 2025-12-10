@@ -114,8 +114,8 @@ Fluxo de registro de um novo suspeito.
 
 ---
 
-### **2️⃣ — Buscar rostos semelhantes (S3)**  
-Fluxo de busca facial a partir de uma imagem no S3.
+### **2️⃣ — Buscar rostos semelhantes (S3) - Assíncrono com Callback**  
+Fluxo de busca facial a partir de uma imagem no S3 com callback automático para o Java.
 
 **Método:** `POST`  
 **Endpoint:** `http://127.0.0.1:5000/faces/search`  
@@ -126,6 +126,28 @@ Fluxo de busca facial a partir de uma imagem no S3.
   "top_k": 5
 }
 ```
+
+**Resposta imediata:**
+```json
+{
+  "requestId": "abc-123-xyz"
+}
+```
+
+**Callback automático para o Java:**  
+Quando o processamento terminar, o Python chama automaticamente:  
+`POST http://host.docker.internal:8080/api/nexus/complete-search`
+
+Com o payload:
+```json
+{
+  "requestId": "abc-123-xyz",
+  "idSuspect": 1,
+  "s3_path": "s3://apijava-qrcode/João Gabriel.png_1763379356782"
+}
+```
+
+> **Nota:** Se enviar uma imagem diretamente (campo `image`), o processamento é síncrono e retorna o resultado imediatamente.
 
 ---
 
