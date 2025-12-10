@@ -238,6 +238,103 @@ def process_search_face_worker(s3_path=None, top_k=5):
 
     
 
+def process_search_face_async_worker(request_id, s3_path, top_k=5):
+    """
+    Worker assíncrono para busca de faces que chama callback no Java.
+    
+    Args:
+        request_id (str): ID único para correlação com o Java
+        s3_path (str): Caminho S3 da imagem
+        top_k (int): Número máximo de resultados
+    """
+    try:
+        print(f"[Worker] Iniciando busca assíncrona - requestId: {request_id}")
+        
+        # Processa a busca usando o worker existente
+        result = process_search_face_worker(s3_path, top_k)
+        
+        if "error" in result:
+            raise Exception(result["error"])
+        
+        # Extrai o suspect_id do winner_match
+        winner_match = result.get("winner_match")
+        suspect_id = winner_match.get("suspect_id") if winner_match else None
+        
+        # Chama callback no Java com sucesso
+        notify_java_search_completion(
+            request_id=request_id,
+            suspect_id=suspect_id,
+            s3_path=result.get("processed_url"),
+            status="completed"
+        )
+        
+        print(f"[Worker] ✅ Busca assíncrona concluída - requestId: {request_id}")
+        return result
+        
+    except Exception as e:
+        print(f"[Worker] ❌ Erro na busca assíncrona - requestId: {request_id}, erro: {e}")
+        traceback.print_exc()
+        
+        # Chama callback no Java com erro
+        notify_java_search_completion(
+            request_id=request_id,
+            suspect_id=None,
+            s3_path=s3_path,
+            status="failed",
+            error=str(e)
+        )
+        
+        raise e
+
+
+def notify_java_search_completion(request_id, suspect_id, s3_path, status, error=None):
+    """
+    Notifica o Java que a busca assíncrona foi concluída.
+    
+    Args:
+        request_id (str): ID de correlação
+        suspect_id (int or None): ID do suspeito encontrado
+        s3_path (str): Caminho da imagem no S3
+        status (str): 'completed' ou 'failed'
+        error (str, optional): Mensagem de erro
+    """
+    import requests
+    
+    # URL do endpoint Java para callback de busca
+    callback_url = "http://localhost:8080/api/nexus/webhooks/complete-search"
+    
+    payload = {
+        "requestId": request_id,
+        "idSuspect": suspect_id,
+        "s3_path": s3_path
+    }
+    
+    # Se houve erro, adiciona informação de erro
+    if status == "failed":
+        payload["error"] = error
+        payload["idSuspect"] = None
+    
+    try:
+        print(f"[Worker] 🔔 Enviando callback de busca para Java: {callback_url}")
+        print(f"[Worker] Payload: {payload}")
+        
+        response = requests.post(
+            callback_url,
+            json=payload,
+            timeout=10,
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            print(f"[Worker] ✅ Callback de busca enviado com sucesso")
+        else:
+            print(f"[Worker] ⚠️ Callback retornou status: {response.status_code}")
+            print(f"[Worker] Response: {response.text}")
+            
+    except Exception as e:
+        print(f"[Worker] ⚠️ Erro ao enviar callback de busca: {e}")
+
+
 def notify_java_completion(suspect_id, face_id, s3_path, status, error=None):
     """
     Notifica o backend Java que o processamento da face foi concluído

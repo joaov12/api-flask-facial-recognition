@@ -13,7 +13,8 @@ faces_bp = Blueprint("faces", __name__)
 # Configura conexão e fila Redis
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 redis_conn = Redis.from_url(redis_url)
-queue = Queue("faces_register_queue", connection=redis_conn)
+register_queue = Queue("faces_register_queue", connection=redis_conn)
+search_queue = Queue("faces_search_queue", connection=redis_conn)
 
 # ============================================================
 #  Rota 1 - Registrar suspeito (imagem associada)
@@ -66,7 +67,7 @@ def register_face():
         if "image" in request.files:
             image_file = request.files["image"]
 
-            job = queue.enqueue(
+            job = register_queue.enqueue(
                 process_register_face,
                 suspect_id,
                 None,          # s3_path não usado
@@ -93,7 +94,7 @@ def register_face():
                 return jsonify({"error": "Formato inválido em 's3_path'. Use s3://bucket/key"}), 400
 
             #  Envia tarefa com função real
-            job = queue.enqueue(
+            job = register_queue.enqueue(
                 process_register_face,
                 suspect_id,
                 s3_path,
@@ -208,9 +209,23 @@ def search_faces():
         from app.services.embeddings_service import detect_and_search_faces
         from app.workers import process_search_face_worker
 
-        data = request.get_json(silent=True) or request.form
-        s3_path = data.get("s3_path")
-        top_k = int(data.get("top_k", 5))
+        # Aceita tanto JSON quanto form-data para compatibilidade
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+            
+        print(f"[DEBUG] Data recebida: {data}")
+        print(f"[DEBUG] Content-Type: {request.content_type}")
+        
+        s3_path = data.get("s3_path") or data.get("s3Path")  # Aceita ambos os formatos
+        top_k_raw = data.get("top_k") or data.get("topK", 5)  # Aceita ambos os formatos
+        
+        try:
+            top_k = int(top_k_raw)
+        except (ValueError, TypeError) as e:
+            print(f"[DEBUG] Erro ao converter top_k: {e}")
+            return jsonify({"error": f"Parâmetro 'top_k' deve ser um número inteiro. Recebido: {top_k_raw}"}), 400
 
         # =====================================================
         # 🟢 CASO 1: Upload local — processamento IMEDIATO
@@ -238,27 +253,33 @@ def search_faces():
             }), 200
 
         # =====================================================
-        # 🟡 CASO 2: Busca via S3 — enviar para Redis
+        # 🟡 CASO 2: Busca via S3 — enviar para Redis com callback
         # =====================================================
         if s3_path:
+            import uuid
+            from app.workers import process_search_face_async_worker
+            
             if not s3_path.startswith("s3://"):
                 return jsonify({"error": "Formato inválido para 's3_path'. Use s3://bucket/key"}), 400
 
-            job = queue.enqueue(
-                process_search_face_worker,
+            # Gera requestId único para correlação
+            request_id = str(uuid.uuid4())
+            
+            print(f"[DEBUG] Enviando job para fila search_queue com requestId: {request_id}")
+            job = search_queue.enqueue(
+                process_search_face_async_worker,
+                request_id,
                 s3_path,
                 top_k,
                 result_ttl=3600,
                 failure_ttl=3600
             )
+            print(f"[DEBUG] Job criado com ID: {job.get_id()}")
 
+            # Retorna conforme documentado no ASYNC_SEARCH_FLOW.md
             return jsonify({
-                "message": "Busca enviada para a fila.",
-                "job_id": job.get_id(),
-                "status": job.get_status(),
-                "s3_path": s3_path,
-                "source": "s3"
-            }), 202
+                "requestId": request_id
+            }), 200
 
         return jsonify({"error": "Forneça 'image' ou 's3_path'."}), 400
 
